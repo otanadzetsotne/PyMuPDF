@@ -299,31 +299,6 @@ PyObject *JM_pushbtn_state(fz_context *ctx, pdf_annot *annot)
     Py_RETURN_FALSE;
 }
 
-// CheckBox get state
-//-----------------------------------------------------------------------------
-PyObject *JM_checkbox_state(fz_context *ctx, pdf_annot *annot)
-{
-    pdf_obj *annot_obj = pdf_annot_obj(ctx, annot);
-    pdf_obj *leafv = pdf_dict_get_inheritable(ctx, annot_obj, PDF_NAME(V));
-    pdf_obj *leafas = pdf_dict_get_inheritable(ctx, annot_obj, PDF_NAME(AS));
-    if (!leafv) Py_RETURN_FALSE;
-    if (leafv == PDF_NAME(Off)) Py_RETURN_FALSE;
-    if (leafv == pdf_new_name(ctx, "Yes"))
-        Py_RETURN_TRUE;
-    if (pdf_is_string(ctx, leafv) && !strcmp(pdf_to_text_string(ctx, leafv), "Off"))
-        Py_RETURN_FALSE;
-    if (pdf_is_string(ctx, leafv) && !strcmp(pdf_to_text_string(ctx, leafv), "Yes"))
-        Py_RETURN_TRUE;
-    if (leafas && leafas == PDF_NAME(Off)) Py_RETURN_FALSE;
-    Py_RETURN_TRUE;
-}
-
-// RadioBox get state
-//-----------------------------------------------------------------------------
-PyObject *JM_radiobtn_state(fz_context *ctx, pdf_annot *annot)
-{   // MuPDF treats radio buttons like check boxes - hence so do we
-    return JM_checkbox_state(ctx, annot);
-}
 
 // Text field retrieve value
 //-----------------------------------------------------------------------------
@@ -416,28 +391,51 @@ void JM_set_choice_options(fz_context *ctx, pdf_annot *annot, PyObject *liste)
     Py_ssize_t i, n = PySequence_Size(liste);
     if (n < 1) return;
     PyObject *tuple = PySequence_Tuple(liste);
-    pdf_obj *annot_obj = pdf_annot_obj(ctx, annot);
-    pdf_document *pdf = pdf_get_bound_document(ctx, annot_obj);
+    PyObject *val = NULL, *val1 = NULL, *val2 = NULL;
+    pdf_obj *optarrsub = NULL, *optarr = NULL, *annot_obj = NULL;
+    pdf_document *pdf = NULL;
     const char *opt = NULL, *opt1 = NULL, *opt2 = NULL;
-    pdf_obj *optarr = pdf_new_array(ctx, pdf, n);
-    pdf_obj *optarrsub = NULL;
-    PyObject *val = NULL;
+    fz_try(ctx) {
+        annot_obj = pdf_annot_obj(ctx, annot);
+        pdf = pdf_get_bound_document(ctx, annot_obj);
+        optarr = pdf_new_array(ctx, pdf, (int) n);
     for (i = 0; i < n; i++) {
         val = PyTuple_GET_ITEM(tuple, i);
         opt = PyUnicode_AsUTF8(val);
         if (opt) {
             pdf_array_push_text_string(ctx, optarr, opt);
         } else {
-            opt1 = PyUnicode_AsUTF8(PyTuple_GetItem(val, 0));
-            opt2 = PyUnicode_AsUTF8(PyTuple_GetItem(val, 1));
-            if (!opt1 || !opt2) return;
+                if (!PySequence_Check(val) || PySequence_Size(val) != 2) {
+                    RAISEPY(ctx, "bad choice field list", PyExc_ValueError);
+                }
+                val1 = PySequence_GetItem(val, 0);
+                opt1 = PyUnicode_AsUTF8(val1);
+                if (!opt1) {
+                    RAISEPY(ctx, "bad choice field list", PyExc_ValueError);
+                }
+                val2 = PySequence_GetItem(val, 1);
+                opt2 = PyUnicode_AsUTF8(val2);
+                if (!opt2) {
+                    RAISEPY(ctx, "bad choice field list", PyExc_ValueError);
+                };
+                Py_CLEAR(val1);
+                Py_CLEAR(val2);
             optarrsub = pdf_array_push_array(ctx, optarr, 2);
             pdf_array_push_text_string(ctx, optarrsub, opt1);
             pdf_array_push_text_string(ctx, optarrsub, opt2);
         }
     }
-    Py_DECREF(tuple);
     pdf_dict_put_drop(ctx, annot_obj, PDF_NAME(Opt), optarr);
+    }
+    fz_always(ctx) {
+        Py_CLEAR(tuple);
+        Py_CLEAR(val1);
+        Py_CLEAR(val2);
+        PyErr_Clear();
+    }
+    fz_catch(ctx) {
+        fz_rethrow(ctx);
+    }
     return;
 }
 
@@ -788,7 +786,8 @@ void JM_set_widget_properties(fz_context *ctx, pdf_annot *annot, PyObject *Widge
 
     // field value ------------------------------------------------------------
     value = GETATTR("field_value");
-    char *text = NULL;
+    char *text = JM_StrAsChar(value);
+
     switch(field_type)
     {
     case PDF_WIDGET_TYPE_RADIOBUTTON:
@@ -797,8 +796,6 @@ void JM_set_widget_properties(fz_context *ctx, pdf_annot *annot, PyObject *Widge
             pdf_set_field_value(ctx, pdf, annot_obj, "Off", 1);
             pdf_dict_put_name(gctx, annot_obj, PDF_NAME(AS), "Off");
         } else {
-            text = JM_StrAsChar(value);
-            // TODO check if another button in the group is ON and if so set it Off
             pdf_obj *onstate = pdf_button_field_on_state(ctx, annot_obj);
             if (onstate) {
                 const char *on = pdf_to_name(ctx, onstate);
@@ -811,17 +808,17 @@ void JM_set_widget_properties(fz_context *ctx, pdf_annot *annot, PyObject *Widge
         }
         break;
     case PDF_WIDGET_TYPE_CHECKBOX:
-        if (PyObject_RichCompareBool(value, Py_True, Py_EQ)) {
+        if (PyObject_RichCompareBool(value, Py_True, Py_EQ) || text && strcmp(text, "Yes")==0) {
             pdf_obj *onstate = pdf_button_field_on_state(ctx, annot_obj);
             const char *on = pdf_to_name(ctx, onstate);
             pdf_set_field_value(ctx, pdf, annot_obj, on, 1);
             pdf_dict_put_name(gctx, annot_obj, PDF_NAME(AS), "Yes");
         } else {
             pdf_set_field_value(ctx, pdf, annot_obj, "Off", 1);
+            pdf_dict_put_name(gctx, annot_obj, PDF_NAME(AS), "Off");
         }
         break;
     default:
-        text = JM_StrAsChar(value);
         if (text) {
             pdf_set_field_value(ctx, pdf, annot_obj, (const char *)text, 1);
             if (field_type == PDF_WIDGET_TYPE_COMBOBOX || field_type == PDF_WIDGET_TYPE_LISTBOX) {
@@ -1056,7 +1053,10 @@ class Widget(object):
         """
         if self.field_type not in (2, 5):
             return None  # no button type
+        if hastattr(self, "parent"):  # field already exists on page
         doc = self.parent.parent
+        else:
+            return None
         xref = self.xref
         states = {"normal": None, "down": None}
         APN = doc.xref_get_key(xref, "AP/N")
@@ -1081,14 +1081,18 @@ class Widget(object):
         """Return the "On" value for button widgets.
         
         This is useful for radio buttons mainly. Checkboxes will always return
-        True. Radio buttons will return the string that is unequal to "Off"
+        "Yes". Radio buttons will return the string that is unequal to "Off"
         as returned by method button_states().
+        If the radio button is new / being created, it does not yet have an
+        "On" value. In this case, a warning is shown and True is returned.
         """
         if self.field_type not in (2, 5):
             return None  # no checkbox or radio button
         if self.field_type == 2:
-            return True
+            return "Yes"
         bstate = self.button_states()
+        if bstate==None:
+            bstate = {}
         for k in bstate.keys():
             for v in bstate[k]:
                 if v != "Off":
