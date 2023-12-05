@@ -1414,15 +1414,19 @@ class Table(object):
                 if 10 < cellbb.width < tbbox.width:
                     l_r.add((cell[0], cell[2]))
 
-            # sort (x0, x1) pairs by x0-values
-            l_r = sorted(list(l_r), key=lambda c: c[0])
+            cells = []
+            # Check if at least one cell found
+            if l_r:
+                # sort (x0, x1) pairs by x0-values
+                l_r = sorted(list(l_r), key=lambda c: c[0])
 
-            # recovered row 0 cells
-            cells = [(l_r[0][0], y0, l_r[0][1], y1)]
+                # recovered row 0 cells
+                cells = [(l_r[0][0], y0, l_r[0][1], y1)]
 
-            for x0, x1 in l_r[1:]:
-                if x0 >= cells[-1][2]:
-                    cells.append((x0, y0, x1, y1))
+                for x0, x1 in l_r[1:]:
+                    if x0 >= cells[-1][2]:
+                        cells.append((x0, y0, x1, y1))
+
             return cells, bbox
 
         # we depend on small glyph heights!
